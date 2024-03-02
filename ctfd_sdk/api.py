@@ -13,7 +13,11 @@ class CTFdException(Exception):
 
 class CtfdConnector:
     def __init__(self, admin_token: str, host: str):
+        admin_token = admin_token or settings.CTFD_ADMIN_TOKEN
+        assert admin_token is not None, 'To use ctfd you need to define "CTFD_ADMIN_TOKEN"'
         self.admin_token = admin_token
+        host = host or settings.CTFD_HOST
+        assert host is not None, 'To use ctfd you need to define "CTFD_HOST"'
         self.host = host.strip('/')
         self.logger = logging.getLogger('ctfd')
 
@@ -144,10 +148,6 @@ class Storage:
 
 class CtfdApi:
     def __init__(self, admin_token: str = None, host: str = None, storage_path: str | Path = None):
-        admin_token = admin_token or settings.CTFD_ADMIN_TOKEN
-        assert admin_token is not None, 'To use ctfd you need to define "CTFD_ADMIN_TOKEN"'
-        host = host or settings.CTFD_HOST
-        assert host is not None, 'To use ctfd you need to define "CTFD_HOST"'
         self.connector = CtfdConnector(admin_token, host)
         self.storage = Storage(storage_path)
         self.logger = logging.getLogger('ctfd')
