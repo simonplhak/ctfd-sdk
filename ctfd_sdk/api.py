@@ -17,58 +17,94 @@ class CtfdConnector:
         self.host = host.strip('/')
         self.logger = logging.getLogger('ctfd')
 
-    def assign_host(func):
+    def __set_args_kwargs(self, *args, **kwargs):
+        url = f'{self.host}/api/v1{args[0]}'
+        if 'headers' not in kwargs:
+            kwargs['headers'] = {}
+        kwargs['headers']['Content-Type'] = 'application/json'
+        kwargs['headers']['Authorization'] = f'Token {self.admin_token}'
+        return (url,) + (args[1:]), kwargs
+
+    def __handle_bad_response(self, func, url, response):
+        if response.status_code in [200, 201]:
+            return
+        msg = f'Unable to get response in method {func.__name__} from url {url}  in CTFd: {response.text}'
+        self.logger.warning(msg)
+        raise CTFdException(msg)
+
+    def aassign_host(func):
         async def inner(self, *args, **kwargs):
-            url = f'{self.host}/api/v1{args[0]}'
-            if 'headers' not in kwargs:
-                kwargs['headers'] = {}
-            kwargs['headers']['Content-Type'] = 'application/json'
-            kwargs['headers']['Authorization'] = f'Token {self.admin_token}'
-            response = await func(self, url, *list(args)[1:], **kwargs)  # noqa
-            if response.status_code not in [200, 201]:
-                msg = f'Unable to get response in method {func.__name__} from url {url}  in CTFd: {response.text}'
-                self.logger.warning(msg)
-                raise CTFdException(msg)
+            args, kwargs = self.__set_args_kwargs(*args, **kwargs)
+            response = await func(self, *args, **kwargs)  # noqa
+            self.__handle_bad_response(func, args[0], response)
             return response
 
         return inner
 
-    @assign_host
-    async def get(self, url, *args, **kwargs):
+    def assign_host(func):
+        def inner(self, *args, **kwargs):
+            args, kwargs = self.__set_args_kwargs(*args, **kwargs)
+            response = func(self, *args, **kwargs)  # noqa
+            self.__handle_bad_response(func, args[0], response)
+            return response
+
+        return inner
+
+    @aassign_host
+    async def aget(self, url, *args, **kwargs):
         async with httpx.AsyncClient() as client:
             response = await client.get(url, *args, **kwargs)
         return response
 
-    @assign_host
-    async def post(self, url, *args, **kwargs):
+    @aassign_host
+    async def apost(self, url, *args, **kwargs):
         async with httpx.AsyncClient() as client:
             response = await client.post(url, *args, **kwargs)
             # response.status_code = 1
         return response
 
-    @assign_host
-    async def patch(self, url, *args, **kwargs):
+    @aassign_host
+    async def apatch(self, url, *args, **kwargs):
         async with httpx.AsyncClient() as client:
             response = await client.patch(url, *args, **kwargs)
         return response
 
-    @assign_host
-    async def delete(self, url, *args, **kwargs):
+    @aassign_host
+    async def adelete(self, url, *args, **kwargs):
         async with httpx.AsyncClient() as client:
             response = await client.delete(url, *args, **kwargs)
         return response
 
+    @assign_host
+    def get(self, url, *args, **kwargs):
+        with httpx.Client() as client:
+            response = client.get(url, *args, **kwargs)
+        return response
 
-class CtfdApi:
-    def __init__(self, admin_token: str = None, host: str = None, storage_path: str | Path = None):
-        admin_token = admin_token or settings.CTFD_ADMIN_TOKEN
-        assert admin_token is not None, 'To use ctfd you need to define "CTFD_ADMIN_TOKEN"'
-        host = host or settings.CTFD_HOST
-        assert host is not None, 'To use ctfd you need to define "CTFD_HOST"'
-        self.connector = CtfdConnector(admin_token, host)
-        self.storage_path = storage_path or settings.CTFD_STORAGE
-        assert self.storage_path is not None, 'To use ctfd you need to define "CTFD_STORAGE"'
-        self.storage_path = Path(self.storage_path)
+    @assign_host
+    def post(self, url, *args, **kwargs):
+        with httpx.Client() as client:
+            response = client.post(url, *args, **kwargs)
+        return response
+
+    @assign_host
+    def patch(self, url, *args, **kwargs):
+        with httpx.Client() as client:
+            response = client.patch(url, *args, **kwargs)
+        return response
+
+    @assign_host
+    def delete(self, url, *args, **kwargs):
+        with httpx.Client() as client:
+            response = client.delete(url, *args, **kwargs)
+        return response
+
+
+class Storage:
+    def __init__(self, storage_path: str | Path):
+        storage_path = storage_path or settings.CTFD_STORAGE
+        assert storage_path is not None, 'To use ctfd you need to define "CTFD_STORAGE"'
+        self.storage_path = Path(storage_path)
         self.logger = logging.getLogger('ctfd')
 
     def get_storage(self):
@@ -96,10 +132,39 @@ class CtfdApi:
         storage[field][name] = {'id': data['id']}
         self.save_storage(storage)
 
-    async def create_user(self, username: str, is_admin=False):
-        response = await self.connector.post(
-            '/users',
-            json={
+    def exist_in_field(self, field: str, name: str):
+        storage = self.get_storage()
+        return name in storage[field]
+
+    def delete_storage_field(self, field: str, name: str):
+        storage = self.get_storage()
+        del storage[field][name]
+        self.save_storage(storage)
+
+
+class CtfdApi:
+    def __init__(self, admin_token: str = None, host: str = None, storage_path: str | Path = None):
+        admin_token = admin_token or settings.CTFD_ADMIN_TOKEN
+        assert admin_token is not None, 'To use ctfd you need to define "CTFD_ADMIN_TOKEN"'
+        host = host or settings.CTFD_HOST
+        assert host is not None, 'To use ctfd you need to define "CTFD_HOST"'
+        self.connector = CtfdConnector(admin_token, host)
+        self.storage = Storage(storage_path)
+        self.logger = logging.getLogger('ctfd')
+
+    def _create_user_core(self, response, username):
+        data = response.json()['data']
+        storage = self.storage.get_storage()
+        storage['users'][username] = {'id': data['id'], 'team_id': None}
+        self.storage.save_storage(storage)
+        self.logger.info(f'Agent with username: {username} registered in CTFd')
+
+    def _create_user_request(self, username: str, is_admin=False):
+        if self.storage.exist_in_field('users', username):
+            self.logger.info(f'User {username} already registered in CTFd')
+            raise CTFdException(f'User {username} already registered in CTFd')
+        return ('/users',), {
+            'json': {
                 'banned': False,
                 'email': f'{username}@email.com',
                 'fields': [],
@@ -108,18 +173,28 @@ class CtfdApi:
                 'password': username,
                 'type': 'admin' if is_admin else 'user',
                 'verified': True,
-            },
-        )
-        data = response.json()['data']
-        storage = self.get_storage()
-        storage['users'][username] = {'id': data['id'], 'team_id': None}
-        self.save_storage(storage)
-        self.logger.info(f'Agent with username: {username} registered in CTFd')
+            }
+        }
 
-    async def create_team(self, name: str):
-        response = await self.connector.post(
-            '/teams',
-            json={
+    def create_user(self, username: str, is_admin=False):
+        args, kwargs = self._create_user_request(username, is_admin)
+        response = self.connector.post(*args, **kwargs)
+        self._create_user_core(response, username)
+
+    async def acreate_user(self, username: str, is_admin=False):
+        args, kwargs = self._create_user_request(username, is_admin)
+        response = await self.connector.apost(*args, **kwargs)
+        self._create_user_core(response, username)
+
+    def _create_team_core(self, response, name):
+        self.storage.update_storage_field_from_response(response, 'teams', name)
+
+    def _create_team_request(self, name: str):
+        if self.storage.exist_in_field('teams', name):
+            self.logger.info(f'Team {name} already registered in CTFd')
+            raise CTFdException(f'Team {name} already registered in CTFd')
+        return ('/teams',), {
+            'json': {
                 'banned': False,
                 'country': 'CZ',
                 'email': f'{name}@copas.cz',
@@ -127,30 +202,75 @@ class CtfdApi:
                 'hidden': False,
                 'name': name,
                 'password': name,
-            },
-        )
-        self.update_storage_field_from_response(response, 'teams', name)
+            }
+        }
 
-    async def remove_user_from_team(self, user_name):
-        user = self.get_field_from_storage('users', user_name)
+    def create_team(self, name: str):
+        args, kwargs = self._create_team_request(name)
+        response = self.connector.post(*args, **kwargs)
+        self._create_team_core(response, name)
+
+    async def acreate_team(self, name: str):
+        args, kwargs = self._create_team_request(name)
+        response = await self.connector.apost(*args, **kwargs)
+        self._create_team_core(response, name)
+
+    def _remove_user_from_team_request(self, user_name):
+        user = self.storage.get_field_from_storage('users', user_name)
         if user['team_id'] is None:
             self.logger.info(f'User {user_name} not assigned to any team')
-            return
+            return None, None
+        return (f'teams/{user["team_id"]}/members',), {'json': {'user_id': user['id']}}
 
-    async def assign_user2team(self, user_name, team_name):
-        user = self.get_field_from_storage('users', user_name)
-        team = self.get_field_from_storage('teams', team_name)
+    def _remove_user_from_team_core(self, user_name):
+        storage = self.storage.get_storage()
+        storage['users'][user_name]['team_id'] = None
+        self.storage.save_storage(storage)
+
+    def remove_user_from_team(self, user_name):
+        args, kwargs = self._remove_user_from_team_request(user_name)
+        if args is None:
+            return
+        self.connector.delete(*args, **kwargs)
+        self._remove_user_from_team_core(user_name)
+
+    async def aremove_user_from_team(self, user_name):
+        args, kwargs = self._remove_user_from_team_request(user_name)
+        if args is None:
+            return
+        await self.connector.adelete(*args, **kwargs)
+        self._remove_user_from_team_core(user_name)
+
+    def assign_user2team(self, user_name, team_name):
+        user = self.storage.get_field_from_storage('users', user_name)
+        team = self.storage.get_field_from_storage('teams', team_name)
         if user['team_id'] == team['id']:
             self.logger.info(f'User {user_name} already assigned to team {team_name}')
             return
         if user['team_id'] is not None:
-            await self.remove_user_from_team(user_name)
-        await self.connector.post(f'/teams/{team["id"]}/members', json={'user_id': user["id"]})
-        storage = self.get_storage()
+            self.remove_user_from_team(user_name)
+        self.connector.post(f'/teams/{team["id"]}/members', json={'user_id': user["id"]})
+        storage = self.storage.get_storage()
         storage['users'][user_name]['team_id'] = team['id']
-        self.save_storage(storage)
+        self.storage.save_storage(storage)
 
-    async def create_challenge(
+    async def aassign_user2team(self, user_name, team_name):
+        user = self.storage.get_field_from_storage('users', user_name)
+        team = self.storage.get_field_from_storage('teams', team_name)
+        if user['team_id'] == team['id']:
+            self.logger.info(f'User {user_name} already assigned to team {team_name}')
+            return
+        if user['team_id'] is not None:
+            await self.aremove_user_from_team(user_name)
+        await self.connector.apost(f'/teams/{team["id"]}/members', json={'user_id': user["id"]})
+        storage = self.storage.get_storage()
+        storage['users'][user_name]['team_id'] = team['id']
+        self.storage.save_storage(storage)
+
+    def _create_challenge_core(self, response, name):
+        self.storage.update_storage_field_from_response(response, 'challenges', name)
+
+    def _create_challenge_request(
         self,
         name: str,
         value: int,
@@ -159,53 +279,124 @@ class CtfdApi:
         state='visible',
         challenge_type: str = 'standard',
     ):
-        response = await self.connector.post(
-            '/challenges',
-            json={
+        if self.storage.exist_in_field('challenges', name):
+            self.logger.info(f'Challenge {name} already registered in CTFd')
+            raise CTFdException(f'Challenge {name} already registered in CTFd')
+        return ('/challenges',), {
+            'json': {
                 'category': category,
                 'description': description,
                 'state': state,
                 'name': name,
                 'type': challenge_type,
                 'value': value,
-            },
-        )
-        self.update_storage_field_from_response(response, 'challenges', name)
+            }
+        }
 
-    async def create_flag(
+    def create_challenge(
+        self,
+        name: str,
+        value: int,
+        category: str = '',
+        description: str = '',
+        state='visible',
+        challenge_type: str = 'standard',
+    ):
+        args, kwargs = self._create_challenge_request(name, value, category, description, state, challenge_type)
+        response = self.connector.post(*args, **kwargs)
+        self._create_challenge_core(response, name)
+
+    async def acreate_challenge(
+        self,
+        name: str,
+        value: int,
+        category: str = '',
+        description: str = '',
+        state='visible',
+        challenge_type: str = 'standard',
+    ):
+        args, kwargs = self._create_challenge_request(name, value, category, description, state, challenge_type)
+        response = await self.connector.apost(*args, **kwargs)
+        self._create_challenge_core(response, name)
+
+    def _create_flag_core(self, response, flag_name):
+        self.storage.update_storage_field_from_response(response, 'flags', flag_name)
+
+    def _create_flag_request(
         self, challenge_name: str, flag_name: str, flag: str, data: str = 'case_insensitive', flag_type='static'
     ):
-        challenge = self.get_field_from_storage('challenges', challenge_name)
+        challenge = self.storage.get_field_from_storage('challenges', challenge_name)
         challenge_id = challenge['id']
-        response = await self.connector.post(
-            '/flags',
-            json={'challenge_id': challenge_id, 'content': flag, 'data': data, 'type': flag_type},
-        )
-        self.update_storage_field_from_response(response, 'flags', flag_name)
+        if self.storage.exist_in_field('flags', flag_name):
+            self.logger.info(f'Flag {flag_name} already registered in CTFd')
+            raise CTFdException(f'Flag {flag_name} already registered in CTFd')
+        return ('/flags',), {'json': {'challenge_id': challenge_id, 'content': flag, 'data': data, 'type': flag_type}}
 
-    async def update_flag(self, name: str, flag: str, data: str = 'case_insensitive', flag_type='static'):
-        field = self.get_field_from_storage('flags', name)
-        flag_id = field['id']
-        await self.connector.patch(
-            f'/flags/{flag_id}',
-            json={'content': flag, 'data': data, 'type': flag_type, 'id': flag_id},
-        )
+    def create_flag(
+        self, challenge_name: str, flag_name: str, flag: str, data: str = 'case_insensitive', flag_type='static'
+    ):
+        args, kwargs = self._create_flag_request(challenge_name, flag_name, flag, data, flag_type)
+        response = self.connector.post(*args, **kwargs)
+        self._create_flag_core(response, flag_name)
 
-    async def delete_flag(self, name: str):
-        field = self.get_field_from_storage('flags', name)
+    async def acreate_flag(
+        self, challenge_name: str, flag_name: str, flag: str, data: str = 'case_insensitive', flag_type='static'
+    ):
+        args, kwargs = self._create_flag_request(challenge_name, flag_name, flag, data, flag_type)
+        response = await self.connector.apost(*args, **kwargs)
+        self._create_flag_core(response, flag_name)
+
+    def _update_flag_request(self, name: str, flag: str, data: str = 'case_insensitive', flag_type='static'):
+        field = self.storage.get_field_from_storage('flags', name)
         flag_id = field['id']
-        await self.connector.delete(f'/flags/{flag_id}')
+        return (f'/flags/{flag_id}',), {'json': {'content': flag, 'data': data, 'type': flag_type, 'id': flag_id}}
+
+    def update_flag(self, name: str, flag: str, data: str = 'case_insensitive', flag_type='static'):
+        args, kwargs = self._update_flag_request(name, flag, data, flag_type)
+        self.connector.patch(*args, **kwargs)
+
+    async def aupdate_flag(self, name: str, flag: str, data: str = 'case_insensitive', flag_type='static'):
+        args, kwargs = self._update_flag_request(name, flag, data, flag_type)
+        await self.connector.apatch(*args, **kwargs)
+
+    def _delete_flag_request(self, name: str):
+        field = self.storage.get_field_from_storage('flags', name)
+        flag_id = field['id']
+        return (f'/flags/{flag_id}',), {}
+
+    def _delete_flag_core(self, name: str):
+        self.storage.delete_storage_field('flags', name)
+
+    def delete_flag(self, name: str):
+        args, kwargs = self._delete_flag_request(name)
+        self.connector.delete(*args, **kwargs)
+        self._delete_flag_core(name)
+
+    async def adelete_flag(self, name: str):
+        args, kwargs = self._delete_flag_request(name)
+        await self.connector.adelete(*args, **kwargs)
+        self._delete_flag_core(name)
 
 
 async def main():
     api = CtfdApi(host='http://localhost:8005')
-    # await api.create_user('user')
-    # await api.create_team('team')
-    # await api.assign_user2team('user', 'team')
-    # await api.create_challenge('challenge', 5)
-    # await api.create_flag('challenge', 'flag', 'flag')
-    # await api.update_flag('flag', 'new_flag')
-    await api.delete_flag('flag')
+    # async
+    # await api.acreate_user('user')
+    # await api.acreate_team('team')
+    # await api.aassign_user2team('user', 'team')
+    # await api.acreate_challenge('challenge', 5)
+    # await api.acreate_flag('challenge', 'flag', 'flag')
+    # await api.aupdate_flag('flag', 'new_flag')
+    # await api.adelete_flag('flag')
+
+    # synchronous
+    api.create_user('sync_user')
+    api.create_team('sync_team')
+    api.assign_user2team('sync_user', 'sync_team')
+    api.create_challenge('sync_challenge', 5)
+    api.create_flag('sync_challenge', 'sync_flag', 'flag')
+    api.update_flag('sync_flag', 'new_flag')
+    api.delete_flag('sync_flag')
 
 
 if __name__ == '__main__':
