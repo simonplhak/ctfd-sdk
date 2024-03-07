@@ -377,9 +377,67 @@ class CtfdApi:
         await self.connector.adelete(*args, **kwargs)
         self._delete_flag_core(name)
 
+    async def adelete_user(self, name: str):
+        user = self.storage.get_field_from_storage('users', name)
+        user_id = user['id']
+        await self.connector.adelete(f'/users/{user_id}')
+        self.storage.delete_storage_field('users', name)
+
+    def delete_user(self, name: str):
+        user = self.storage.get_field_from_storage('users', name)
+        user_id = user['id']
+        self.connector.delete(f'/users/{user_id}')
+        self.storage.delete_storage_field('users', name)
+
+    async def adelete_team(self, name: str):
+        team = self.storage.get_field_from_storage('teams', name)
+        team_id = team['id']
+        await self.connector.adelete(f'/teams/{team_id}')
+        self.storage.delete_storage_field('teams', name)
+
+    def delete_team(self, name: str):
+        team = self.storage.get_field_from_storage('teams', name)
+        team_id = team['id']
+        self.connector.delete(f'/teams/{team_id}')
+        self.storage.delete_storage_field('teams', name)
+
+    async def adelete_challenge(self, name: str):
+        challenge = self.storage.get_field_from_storage('challenges', name)
+        challenge_id = challenge['id']
+        await self.connector.adelete(f'/challenges/{challenge_id}')
+        self.storage.delete_storage_field('challenges', name)
+
+    def delete_challenge(self, name: str):
+        challenge = self.storage.get_field_from_storage('challenges', name)
+        challenge_id = challenge['id']
+        self.connector.delete(f'/challenges/{challenge_id}')
+        self.storage.delete_storage_field('challenges', name)
+
+    async def aclear(self):
+        storage = self.storage.get_storage()
+        for user in storage['users']:
+            await self.adelete_user(user)
+        for team in storage['teams']:
+            await self.adelete_team(team)
+        for flag in storage['flags']:
+            await self.adelete_flag(flag)
+        for challenge in storage['challenges']:
+            await self.adelete_challenge(challenge)
+
+    def clear(self):
+        storage = self.storage.get_storage()
+        for user in storage['users']:
+            self.delete_user(user)
+        for team in storage['teams']:
+            self.delete_team(team)
+        for flag in storage['flags']:
+            self.delete_flag(flag)
+        for challenge in storage['challenges']:
+            self.delete_challenge(challenge)
+
 
 async def main():
-    api = CtfdApi(host='http://localhost:8005')
+    api = CtfdApi()
     # async
     # await api.acreate_user('user')
     # await api.acreate_team('team')
@@ -388,15 +446,23 @@ async def main():
     # await api.acreate_flag('challenge', 'flag', 'flag')
     # await api.aupdate_flag('flag', 'new_flag')
     # await api.adelete_flag('flag')
+    # await api.adelete_challenge('challenge')
+    # await api.adelete_user('user')
+    # await api.adelete_team('team')
+    # await api.aclear()
 
     # synchronous
-    api.create_user('sync_user')
-    api.create_team('sync_team')
-    api.assign_user2team('sync_user', 'sync_team')
-    api.create_challenge('sync_challenge', 5)
-    api.create_flag('sync_challenge', 'sync_flag', 'flag')
-    api.update_flag('sync_flag', 'new_flag')
-    api.delete_flag('sync_flag')
+    # api.create_user('sync_user')
+    # api.create_team('sync_team')
+    # api.assign_user2team('sync_user', 'sync_team')
+    # api.create_challenge('sync_challenge', 5)
+    # api.create_flag('sync_challenge', 'sync_flag', 'flag')
+    # api.update_flag('sync_flag', 'new_flag')
+    # api.delete_flag('sync_flag')
+    # api.delete_challenge('sync_challenge')
+    # api.delete_user('sync_user')
+    # api.delete_team('sync_team')
+    # api.clear()
 
 
 if __name__ == '__main__':
