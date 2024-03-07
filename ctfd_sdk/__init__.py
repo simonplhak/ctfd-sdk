@@ -1,1 +1,1 @@
-from api import CtfdApi
+from ctfd_sdk.api import CtfdApi
